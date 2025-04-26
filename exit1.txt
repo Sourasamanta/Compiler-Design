@@ -1,0 +1,18 @@
+    int a, b;
+    float division;
+
+    printf("Enter two integers: ");
+    scanf("%d %d", &a, &b);
+
+    printf("Sum = %d\n", a + b);
+    printf("Difference = %d\n", a - b);
+    printf("Product = %d\n", a * b);
+
+    if (b != 0) {
+        division = (float)a / b;
+        printf("Division = %.2f\n", division);
+    } else {
+        printf("Cannot divide by zero!\n");
+    }
+
+    return 0;
