@@ -1,4 +1,5 @@
-    int a, b;
+    int a = 5;
+    int b = 7;
     float division;
 
     printf("Enter two integers: ");
@@ -10,7 +11,7 @@
 
     if (b != 0) {
         division = (float)a / b;
-        printf("Division = %.2f\n", division);
+        printf("Division = %2f\n", division);
     } else {
         printf("Cannot divide by zero!\n");
     }
