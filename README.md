@@ -1,164 +1,107 @@
-# 🛠️ Compiler Project
 
-Hello guys 👋  
-I am building a **Compiler** from scratch in C.
+# ⚙️ C Compiler Project (LL(1) Based)
 
-The compiler has 3 main parts:
-
-1. **Lexer**
-2. **Parser**
-3. **Code Optimization**
+A compiler built in pure C that performs lexical and syntax analysis using an LL(1) parser.
 
 ---
 
-## ✅ Lexer Module (Completed)
+## ✅ Features
 
-You can test the lexer by writing any C code inside the `exit1.txt` file.
+### 🔹 Lexical Analyzer
+- Scans the source code and converts it into a stream of tokens
+- Supports:
+  - Keywords, identifiers, literals
+  - Operators, delimiters, separators
+- Each token includes its type and the line number
+- Stored as a linked list for easy traversal during parsing
+
+### 🔹 LL(1) Parser
+- Implements a predictive parsing engine using:
+  - Stack-based parsing
+  - A precomputed parsing table
+  - Flat-indexed production rules
+- Detects syntax errors with precise messages:
+```
+
+Syntax Error at line 5: expected IDENTIFIER but found ;
+
+````
+
+### 🔹 Syntax Error Reporting
+- Clearly displays expected vs. actual tokens
+- Highlights the line number of the error for easy debugging
 
 ---
 
-### 🧪 Example
+## 🚀 How to Run
 
-#### 🔤 Input and Output (`exit1.txt`):
-<br><br>
-**INPUT**
+1. Place your source code in `exit1.txt`
+2. Compile the compiler:
+ ```bash
+ gcc compiler.c -o compiler
+````
 
-int a, b;<br>
-float division;
+3. Run the executable:
 
-printf("Enter two integers: ");<br>
-scanf("%d %d", &a, &b);
+   ```bash
+   ./compiler
+   ```
 
-printf("Sum = %d\n", a + b);<br>
-printf("Difference = %d\n", a - b);<br>
-printf("Product = %d\n", a * b);
+---
 
-if (b != 0) {<br>
-    division = (float)a / b;<br>
-    printf("Division = %.2f\n", division);<br>
-} else {<br>
-    printf("Cannot divide by zero!\n");<br>
-}
+## 📁 Project Structure
 
-return 0;
-<br><br>
+```
+.
+├── compiler.c       # Complete implementation (lexer + parser)
+├── exit1.txt        # Input source code to be compiled
+└── README.md        # Project documentation
+```
 
-**OUTPUT**
+---
 
------ Token List -----<br>
-Keyword: int<br>
-Keyword: a<br>
-Keyword: b<br>
-Separator: ;<br>
+## 🧪 Sample `exit1.txt` (You Can Modify)
 
------ Token List -----<br>
-Keyword: float<br>
-Keyword: division<br>
-Separator: ;<br>
+```c
+int a, b;
+a = 10 + 20;
+return a;
+```
 
------ Token List -----<br>
+---
 
------ Token List -----<br>
-Keyword: printf<br>
-Separator: (<br>
-Keyword: Enter two integers:<br>
-Separator: )<br>
-Separator: ;<br>
+## 🧾 Output (Example)
 
------ Token List -----<br>
-Keyword: scanf<br>
-Separator: (<br>
-Keyword: %d %d<br>
-Keyword: &a<br>
-Keyword: &b<br>
-Separator: )<br>
-Separator: ;<br>
+```
+----- Token Stream -----
+[int] [ID: a] [,] [ID: b] [;]
+[ID: a] [=] [NUM: 10] [+] [NUM: 20] [;]
+[return] [ID: a] [;]
 
------ Token List -----<br>
+Parsing started...
+Input Accepted by the Grammar.
+```
 
------ Token List -----<br>
-Keyword: printf<br>
-Separator: (<br>
-Keyword: Sum = %d\n<br>
-Keyword: a<br>
-Operator: +<br>
-Keyword: b<br>
-Separator: )<br>
-Separator: ;<br>
+---
 
------ Token List -----<br>
-Keyword: printf<br>
-Separator: (<br>
-Keyword: Difference = %d\n<br>
-Keyword: a<br>
-Operator: -<br>
-Keyword: b<br>
-Separator: )<br>
-Separator: ;<br>
+## 📌 Note
 
------ Token List -----<br>
-Keyword: printf<br>
-Separator: (<br>
-Keyword: Product = %d\n<br>
-Keyword: a<br>
-Operator: *<br>
-Keyword: b<br>
-Separator: )<br>
-Separator: ;<br>
+The grammar used in this compiler is LL(1)-compliant and supports basic C-style syntax.
+**A complete grammar section will be added when the project is finalized.**
 
------ Token List -----<br>
+---
 
------ Token List -----<br>
-Keyword: if<br>
-Separator: (<br>
-Keyword: b<br>
-Operator: =<br>
-Literal: 0<br>
-Separator: )<br>
+## 🛠️ In Progress
 
------ Token List -----<br>
-Keyword: division<br>
-Operator: =<br>
-Separator: (<br>
-Keyword: float<br>
-Separator: )<br>
-Keyword: a<br>
-Operator: /<br>
-Keyword: b<br>
-Separator: ;<br>
+* [ ] Intermediate Code Generation
+* [ ] Code Optimization (Constant folding, dead code elimination)
+* [ ] Symbol Table
+* [ ] Grammar Documentation
 
------ Token List -----<br>
-Keyword: printf<br>
-Separator: (<br>
-Keyword: Division = %.2f\n<br>
-Keyword: division<br>
-Separator: )<br>
-Separator: ;<br>
+---
 
------ Token List -----<br>
-Keyword: else<br>
+## 👨‍💻 Author
 
------ Token List -----<br>
-Keyword: printf<br>
-Separator: (<br>
-Keyword: Cannot divide by zero!\n<br>
-Separator: )<br>
-Separator: ;<br>
+Built with ❤️ in C by Sourajit Samanta
 
------ Token List -----<br>
-
------ Token List -----<br>
-
------ Token List -----<br>
-Keyword: return<br>
-Literal: 0<br>
-Separator: ;<br>
-
-Press any key to continue . . .
-
-## 🔜 Upcoming Features
-
-- ✅ Lexer: Done
-- 🔄 Parser: In Progress
-- 🚀 Code Optimization: Coming Soon
-
+---
