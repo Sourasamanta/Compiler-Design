@@ -1,19 +1,118 @@
-    int a = 5;
-    int b = 7;
-    float division;
+if you wish to check, use one code at a time and remove comments
 
-    printf("Enter two integers: ");
-    scanf("%d %d", &a, &b);
+// Test Case 1: Complex program with declarations, assignments, if, and while
+int x, y, z, temp, result;
+float temp2;
+x = 30;
+y = 10;
+z = 20;
+temp2 = 0.0;
+if (x > y || x != y) {
+    temp = x / 1;
+    x = y;
+    y = temp;
+}
+if (y > z && y >= z) {
+    temp = y / 1;
+    y = z;
+    z = temp;
+}
+while (result <= 100) {
+    result = result + 10;
+}
+return result;
 
-    printf("Sum = %d\n", a + b);
-    printf("Difference = %d\n", a - b);
-    printf("Product = %d\n", a * b);
 
-    if (b != 0) {
-        division = (float)a / b;
-        printf("Division = %2f\n", division);
-    } else {
-        printf("Cannot divide by zero!\n");
+
+// Test Case 2: Program with printf statement
+int a;
+a = 5;
+printf  @"Value of a is ~a"@;
+return a;
+
+
+
+// Test Case 3: Simple arithmetic and conditional
+int x, y;
+float z;
+x = 5;
+y = x + 10 * 2;
+z = 3.14;
+if (x < y) {
+    z = z - 1.0;
+} else {
+    z = z + 1.0;
+}
+return x;
+
+
+
+// Test Case 4: Palindrome check
+int num, rev, temp, digit, result;
+num = 121;
+rev = 0;
+temp = num;
+while (temp > 0) {
+    digit = temp - (temp / 10) * 10;
+    rev = rev * 10 + digit;
+    temp = temp / 10;
+}
+if (num == rev) {
+    result = 1;
+} else {
+    result = 0;
+}
+return result;
+
+
+
+// Test Case 5: Nested block
+{
+    int x, y;
+    x = 10;
+    {
+        y = x + 20;
+        return y;
     }
+}
 
-    return 0;
+
+
+// Test Case 6: Invalid syntax (missing semicolon)
+int x;
+x = 10
+return x;
+
+
+
+// Test Case 7:
+int x;
+x = 10 && 20;
+return x;
+
+
+
+// Test Case 8: Empty input
+
+
+
+
+// Test Case 9: Simple sum loop
+int i, sum;
+sum = 0;
+i = 0;
+while (i < 100) {
+    sum = sum + i;
+    i = i + 1;
+}
+return sum;
+
+
+
+// Test Case 10: Unary operator
+int x, y, z;
+x = 0;
+y = 7;
+z = 5;
+x = -(10 * (y + !z));
+return x;
