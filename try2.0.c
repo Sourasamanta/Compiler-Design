@@ -106,9 +106,10 @@ typedef struct tree {
     char symbol[maxSymbolLength];
     int childCount;
     struct tree* children[10];
-    struct tree* parent; // Added parent pointer
+    struct tree* parent;
     Token token;
     int isTokenPresent;
+    VarType symbolType;
 } node;
 
 typedef struct {
@@ -142,8 +143,8 @@ void initStack(stack* s);
 Token peekNextToken(tokenNode** current);
 Terminal getTerminalEnum(const char* sym, Token token);
 NonTerminal getNonTerminalEnum(const char* sym);
-const char* getTokenString(Token t);
-char* cleanTokenString(const char* str);
+char* getTokenString(Token t, char* buffer, size_t bufferSize);
+char* cleanTokenString(char* token);
 char (*getFlatIndex(productionRule* grammar, int prodNum))[maxSymbolLength];
 int parsingTableChecking(tokenNode* head, node** p, SymbolTable* table);
 Token getNextToken(tokenNode** current);
@@ -153,6 +154,43 @@ void ParsingTableInitialized(void);
 void initSymbolTable(SymbolTable* table);
 int addSymbol(SymbolTable* table, const char* name, VarType type, int lineNumber);
 int findSymbol(SymbolTable* table, const char* name);
+void printValue(SymbolEntry* entry);
+double evaluateExpression(node* n, SymbolTable* table);
+double evaluateRelExpr(node* n, SymbolTable* table);
+double evaluateArithExpr(node* n, SymbolTable* table);
+double evaluateTerm(node* n, SymbolTable* table);
+double evaluateFactor(node* n, SymbolTable* table);
+int executeBlock(node* n, SymbolTable* table);
+void executeAssignment(node* n, SymbolTable* table);
+void executeReturn(node* n, SymbolTable* table);
+void executeIfStatement(node* n, SymbolTable* table);
+void executeWhileStatement(node* n, SymbolTable* table);
+void executePrintf(node* n, SymbolTable* table);
+void updateSymbol(SymbolTable* table, int index, double value);
+double executeReturnStmt(node* returnStmt, SymbolTable* table);
+double executeStatementList(node* statementList, SymbolTable* table, int* hasReturned);
+double executeStatement(node* statement, SymbolTable* table, int* hasReturned);
+double executeProgram(node* program, SymbolTable* table);
+
+// Global variable to store return value and signal termination
+static double returnValue = 0.0;
+static int hasReturned = 0;
+
+// Function to reset return state (call before starting execution)
+void resetReturnState() {
+    returnValue = 0.0;
+    hasReturned = 0;
+}
+
+// Function to check if a return has occurred
+int hasProgramReturned() {
+    return hasReturned;
+}
+
+// Function to get the return value
+double getReturnValue() {
+    return returnValue;
+}
 
 // Symbol Table Functions
 void initSymbolTable(SymbolTable* table) {
@@ -221,9 +259,22 @@ void push(stack* p, char* chars, node* treeNode) {
         printf("Stack Overflow! Cannot push '%s'\n", chars);
         exit(EXIT_FAILURE);
     }
+    if (!chars) {
+        printf("Error: Attempting to push NULL symbol\n");
+        exit(EXIT_FAILURE);
+    }
+    if (strlen(chars) >= maxSymbolLength) {
+        printf("Error: Symbol '%s' exceeds max length of %d\n", chars, maxSymbolLength - 1);
+        exit(EXIT_FAILURE);
+    }
     p->items[++(p->top)].symbol = strdup(chars);
+    if (!p->items[p->top].symbol) {
+        printf("Error: Memory allocation failed for symbol '%s'\n", chars);
+        exit(EXIT_FAILURE);
+    }
     p->items[p->top].treeNode = treeNode;
     p->items[p->top].isTerminal = isNonTerminal(chars) ? 0 : 1;
+    printf("Debug: Pushed symbol '%s' to stack\n", chars);
 }
 
 void freeNode(node* n) {
@@ -234,12 +285,14 @@ void freeNode(node* n) {
     free(n);
 }
 
-StackItem pop(stack* p) {
-    if (isEmpty(p)) {
-        printf("Stack Underflow!\n");
-        exit(EXIT_FAILURE);
+StackItem pop(stack *s) {
+    StackItem item = {NULL, 0, NULL};
+    if (!isEmpty(s)) {
+        item = s->items[s->top--];
+        printf("Debug: Popped symbol '%s'\n", item.symbol ? item.symbol : "NULL");
+    } else {
+        printf("Error: Stack underflow\n");
     }
-    StackItem item = p->items[p->top--];
     return item;
 }
 
@@ -301,15 +354,34 @@ tokenNode* append(Token T, tokenNode* head) {
 }
 
 void freeTokenList(tokenNode* head) {
-    tokenNode* temp;
-    while (head != NULL) {
-        temp = head;
-        head = head->next;
+    tokenNode* current = head;
+    while (current != NULL) {
+        tokenNode* temp = current;
+        current = current->next;
+        switch (temp->token.type) {
+            case TOKEN_KEYWORD:
+                free(temp->token.data.keyword.lexeme);
+                break;
+            case TOKEN_IDENTIFIER:
+                free(temp->token.data.identifier.lexeme);
+                break;
+            case TOKEN_LITERAL:
+                free(temp->token.data.literal.value);
+                break;
+            case TOKEN_STRING:
+                free(temp->token.data.string.value);
+                break;
+            case TOKEN_OPERATOR:
+                free(temp->token.data.operator.op);
+                break;
+            default:
+                break;
+        }
         free(temp);
     }
 }
 
-tokenNode* check(const char* content, int lineNumber) {
+tokenNode* check(const char *content, int lineNumber) {
     tokenNode* head = NULL;
     int i = 0;
 
@@ -323,15 +395,33 @@ tokenNode* check(const char* content, int lineNumber) {
         }
 
         if (content[i] == '/' && content[i + 1] == '/') {
-            printf("Debug: Found comment start at position %d, line %d\n", i, lineNumber);
+            printf("Debug: Found single-line comment start at position %d, line %d\n", i, lineNumber);
             while (content[i] != '\n' && content[i] != '\0') i++;
             if (content[i] == '\n') lineNumber++;
             i++;
-            printf("Debug: Skipped comment, now at position %d, line %d\n", i, lineNumber);
+            printf("Debug: Skipped single-line comment, now at position %d, line %d\n", i, lineNumber);
             continue;
         }
 
-        Token t;
+        if (content[i] == '/' && content[i + 1] == '*') {
+            printf("Debug: Found multi-line comment start at position %d, line %d\n", i, lineNumber);
+            i += 2;
+            while (content[i] != '\0' && !(content[i] == '*' && content[i + 1] == '/')) {
+                if (content[i] == '\n') lineNumber++;
+                i++;
+            }
+            if (content[i] == '*' && content[i + 1] == '/') {
+                i += 2;
+                printf("Debug: Skipped multi-line comment, now at position %d, line %d\n", i, lineNumber);
+                continue;
+            } else {
+                printf("Syntax Error at line %d: Unclosed multi-line comment\n", lineNumber);
+                freeTokenList(head);
+                return NULL;
+            }
+        }
+
+        Token t = {0}; // Initialize token to prevent undefined behavior
         t.lineNumber = lineNumber;
         printf("Debug: Creating token at position %d, line %d\n", i, lineNumber);
 
@@ -339,37 +429,35 @@ tokenNode* check(const char* content, int lineNumber) {
             int start = i;
             while (isalnum(content[i]) || content[i] == '_') i++;
             int len = i - start;
+            if (len >= sizeof(t.data.keyword.lexeme)) len = sizeof(t.data.keyword.lexeme) - 1;
+            strncpy(t.data.keyword.lexeme, &content[start], len);
+            t.data.keyword.lexeme[len] = '\0';
+            printf("Debug: Extracted lexeme '%s' (length %d)\n", t.data.keyword.lexeme, len);
 
-            char buffer[64];
-            strncpy(buffer, &content[start], len);
-            buffer[len] = '\0';
-            printf("Debug: Extracted lexeme '%s' (length %d)\n", buffer, len);
-
-            if (strcmp(buffer, "int") == 0 || strcmp(buffer, "float") == 0 ||
-                strcmp(buffer, "return") == 0 || strcmp(buffer, "if") == 0 ||
-                strcmp(buffer, "else") == 0 || strcmp(buffer, "while") == 0 ||
-                strcmp(buffer, "printf") == 0) {
+            if (strcmp(t.data.keyword.lexeme, "int") == 0 || strcmp(t.data.keyword.lexeme, "float") == 0 ||
+                strcmp(t.data.keyword.lexeme, "return") == 0 || strcmp(t.data.keyword.lexeme, "if") == 0 ||
+                strcmp(t.data.keyword.lexeme, "else") == 0 || strcmp(t.data.keyword.lexeme, "while") == 0 ||
+                strcmp(t.data.keyword.lexeme, "printf") == 0) {
                 t.type = TOKEN_KEYWORD;
-                strcpy(t.data.keyword.lexeme, buffer);
-                printf("Debug: Token is KEYWORD: %s\n", buffer);
+                printf("Debug: Token is KEYWORD: %s\n", t.data.keyword.lexeme);
             } else {
                 t.type = TOKEN_IDENTIFIER;
-                strcpy(t.data.identifier.lexeme, buffer);
-                printf("Debug: Token is IDENTIFIER: %s\n", buffer);
+                strncpy(t.data.identifier.lexeme, t.data.keyword.lexeme, sizeof(t.data.identifier.lexeme));
+                t.data.identifier.lexeme[sizeof(t.data.identifier.lexeme) - 1] = '\0';
+                printf("Debug: Token is IDENTIFIER: %s\n", t.data.identifier.lexeme);
             }
             head = append(t, head);
         } else if (isdigit(content[i])) {
             int start = i;
             int hasDot = 0;
-
             while (isdigit(content[i])) i++;
             if (content[i] == '.' && isdigit(content[i + 1])) {
                 hasDot = 1;
                 i++;
                 while (isdigit(content[i])) i++;
             }
-
             int len = i - start;
+            if (len >= sizeof(t.data.literal.value)) len = sizeof(t.data.literal.value) - 1;
             strncpy(t.data.literal.value, &content[start], len);
             t.data.literal.value[len] = '\0';
             t.type = TOKEN_LITERAL;
@@ -385,6 +473,7 @@ tokenNode* check(const char* content, int lineNumber) {
                 return NULL;
             }
             int len = i - start;
+            if (len >= sizeof(t.data.string.value)) len = sizeof(t.data.string.value) - 1;
             strncpy(t.data.string.value, &content[start], len);
             t.data.string.value[len] = '\0';
             t.type = TOKEN_STRING;
@@ -434,14 +523,19 @@ tokenNode* check(const char* content, int lineNumber) {
             i++;
         }
     }
+    // Append end-of-input token
+    Token endToken = { .type = TOKEN_SEPARATOR, .data.separator.symbol = '$', .lineNumber = lineNumber };
+    head = append(endToken, head);
     printf("Debug: Lexer finished, returning token list\n");
     return head;
 }
 
+// Initialize the parsing table and grammar productions
 void ParsingTableInitialized(void) {
     flatIndexCounter = 1;
     productionCount = 0;
 
+    // Initialize parsing table with -1 (no production)
     for (int i = 0; i < num_nonTerminal; i++) {
         for (int j = 0; j < num_terminal; j++) {
             parsingTable[i][j] = -1;
@@ -769,6 +863,14 @@ void ParsingTableInitialized(void) {
     grammar[productionCount].productionIndex[1] = flatIndexCounter++;
     productionCount++;
 
+    // 53: Program -> epsilon (new production for empty input)
+    strcpy(grammar[productionCount].lhs, "Program");
+    grammar[productionCount].productionCount = 1;
+    strcpy(grammar[productionCount].rhs[0][0], "epsilon");
+    grammar[productionCount].rhs[0][1][0] = '\0';
+    grammar[productionCount].productionIndex[0] = flatIndexCounter++;
+    productionCount++;
+
     // Update parsing table
     parsingTable[NT_PROGRAM][T_INT] = 1;
     parsingTable[NT_PROGRAM][T_FLOAT] = 1;
@@ -778,6 +880,7 @@ void ParsingTableInitialized(void) {
     parsingTable[NT_PROGRAM][T_LBRACE] = 1;
     parsingTable[NT_PROGRAM][T_WHILE] = 1;
     parsingTable[NT_PROGRAM][T_PRINTF] = 1;
+    parsingTable[NT_PROGRAM][T_DOLLAR] = 53; // New mapping for empty program
 
     parsingTable[NT_STATEMENTLIST][T_INT] = 2;
     parsingTable[NT_STATEMENTLIST][T_FLOAT] = 2;
@@ -976,88 +1079,74 @@ void ungetToken(Token token) {
     hasPushedBack = 1;
 }
 
-char* cleanTokenString(const char* str) {
-    static char buffer[64];
-    strncpy(buffer, str, sizeof(buffer) - 1);
-    buffer[sizeof(buffer) - 1] = '\0';
-    int len = strlen(buffer);
-    while (len > 0 && isspace(buffer[len - 1])) {
-        buffer[len - 1] = '\0';
-        len--;
+char* cleanTokenString(char* token) {
+    if (!token) return NULL;
+    int len = strlen(token);
+    char* result = malloc(len + 1);
+    if (!result) {
+        printf("Error: Memory allocation failed in cleanTokenString\n");
+        exit(1);
     }
-    return buffer;
+    strcpy(result, token);
+    while (len > 0 && (result[len - 1] == ' ' || result[len - 1] == '\n' || result[len - 1] == '\t')) {
+        result[--len] = '\0';
+    }
+    return result;
 }
 
 int terminalMatches(const char* terminal, Token token) {
+    if (strcmp(terminal, "$") == 0) {
+        return token.lineNumber == -1 || token.data.separator.symbol == '$';
+    }
     if (strcmp(terminal, "id") == 0) {
         return token.type == TOKEN_IDENTIFIER;
     }
     if (strcmp(terminal, "string") == 0) {
         return token.type == TOKEN_STRING;
     }
-    if (strcmp(terminal, "int") == 0)
-        return token.type == TOKEN_KEYWORD && strcmp(cleanTokenString(token.data.keyword.lexeme), "int") == 0;
-    if (strcmp(terminal, "float") == 0)
-        return token.type == TOKEN_KEYWORD && strcmp(cleanTokenString(token.data.keyword.lexeme), "float") == 0;
-    if (strcmp(terminal, "return") == 0)
-        return token.type == TOKEN_KEYWORD && strcmp(cleanTokenString(token.data.keyword.lexeme), "return") == 0;
-    if (strcmp(terminal, "if") == 0)
-        return token.type == TOKEN_KEYWORD && strcmp(cleanTokenString(token.data.keyword.lexeme), "if") == 0;
-    if (strcmp(terminal, "else") == 0)
-        return token.type == TOKEN_KEYWORD && strcmp(cleanTokenString(token.data.keyword.lexeme), "else") == 0;
-    if (strcmp(terminal, "while") == 0)
-        return token.type == TOKEN_KEYWORD && strcmp(cleanTokenString(token.data.keyword.lexeme), "while") == 0;
-    if (strcmp(terminal, "printf") == 0)
-        return token.type == TOKEN_KEYWORD && strcmp(cleanTokenString(token.data.keyword.lexeme), "printf") == 0;
-    if (strcmp(terminal, "literal") == 0)
+    if (strcmp(terminal, "literal") == 0) {
         return token.type == TOKEN_LITERAL;
-    if (strcmp(terminal, "=") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "=") == 0;
-    if (strcmp(terminal, "+") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "+") == 0;
-    if (strcmp(terminal, "-") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "-") == 0;
-    if (strcmp(terminal, "*") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "*") == 0;
-    if (strcmp(terminal, "/") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "/") == 0;
-    if (strcmp(terminal, "!") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "!") == 0;
-    if (strcmp(terminal, "<") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "<") == 0;
-    if (strcmp(terminal, "<=") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "<=") == 0;
-    if (strcmp(terminal, ">") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), ">") == 0;
-    if (strcmp(terminal, ">=") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), ">=") == 0;
-    if (strcmp(terminal, "==") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "==") == 0;
-    if (strcmp(terminal, "!=") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "!=") == 0;
-    if (strcmp(terminal, "&&") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "&&") == 0;
-    if (strcmp(terminal, "||") == 0)
-        return token.type == TOKEN_OPERATOR && strcmp(cleanTokenString(token.data.operator.op), "||") == 0;
-    if (strcmp(terminal, ";") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == ';';
-    if (strcmp(terminal, "(") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == '(';
-    if (strcmp(terminal, ")") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == ')';
-    if (strcmp(terminal, ",") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == ',';
-    if (strcmp(terminal, "{") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == '{';
-    if (strcmp(terminal, "}") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == '}';
-    if (strcmp(terminal, "$") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == '$';
-    if (strcmp(terminal, "@") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == '@';
-    if (strcmp(terminal, "~") == 0)
-        return token.type == TOKEN_SEPARATOR && token.data.separator.symbol == '~';
-    return 0;
+    }
+    char* cleaned = NULL;
+    int result = 0;
+    if (token.type == TOKEN_KEYWORD) {
+        cleaned = cleanTokenString(token.data.keyword.lexeme);
+        if (strcmp(terminal, "int") == 0) result = strcmp(cleaned, "int") == 0;
+        else if (strcmp(terminal, "float") == 0) result = strcmp(cleaned, "float") == 0;
+        else if (strcmp(terminal, "return") == 0) result = strcmp(cleaned, "return") == 0;
+        else if (strcmp(terminal, "if") == 0) result = strcmp(cleaned, "if") == 0;
+        else if (strcmp(terminal, "else") == 0) result = strcmp(cleaned, "else") == 0;
+        else if (strcmp(terminal, "while") == 0) result = strcmp(cleaned, "while") == 0;
+        else if (strcmp(terminal, "printf") == 0) result = strcmp(cleaned, "printf") == 0;
+    } else if (token.type == TOKEN_OPERATOR) {
+        cleaned = cleanTokenString(token.data.operator.op);
+        if (strcmp(terminal, "=") == 0) result = strcmp(cleaned, "=") == 0;
+        else if (strcmp(terminal, "+") == 0) result = strcmp(cleaned, "+") == 0;
+        else if (strcmp(terminal, "-") == 0) result = strcmp(cleaned, "-") == 0;
+        else if (strcmp(terminal, "*") == 0) result = strcmp(cleaned, "*") == 0;
+        else if (strcmp(terminal, "/") == 0) result = strcmp(cleaned, "/") == 0;
+        else if (strcmp(terminal, "!") == 0) result = strcmp(cleaned, "!") == 0;
+        else if (strcmp(terminal, "<") == 0) result = strcmp(cleaned, "<") == 0;
+        else if (strcmp(terminal, "<=") == 0) result = strcmp(cleaned, "<=") == 0;
+        else if (strcmp(terminal, ">") == 0) result = strcmp(cleaned, ">") == 0;
+        else if (strcmp(terminal, ">=") == 0) result = strcmp(cleaned, ">=") == 0;
+        else if (strcmp(terminal, "==") == 0) result = strcmp(cleaned, "==") == 0;
+        else if (strcmp(terminal, "!=") == 0) result = strcmp(cleaned, "!=") == 0;
+        else if (strcmp(terminal, "&&") == 0) result = strcmp(cleaned, "&&") == 0;
+        else if (strcmp(terminal, "||") == 0) result = strcmp(cleaned, "||") == 0;
+    } else if (token.type == TOKEN_SEPARATOR) {
+        char temp[2] = {token.data.separator.symbol, '\0'};
+        if (strcmp(terminal, ";") == 0) result = token.data.separator.symbol == ';';
+        else if (strcmp(terminal, "(") == 0) result = token.data.separator.symbol == '(';
+        else if (strcmp(terminal, ")") == 0) result = token.data.separator.symbol == ')';
+        else if (strcmp(terminal, ",") == 0) result = token.data.separator.symbol == ',';
+        else if (strcmp(terminal, "{") == 0) result = token.data.separator.symbol == '{';
+        else if (strcmp(terminal, "}") == 0) result = token.data.separator.symbol == '}';
+        else if (strcmp(terminal, "@") == 0) result = token.data.separator.symbol == '@';
+        else if (strcmp(terminal, "~") == 0) result = token.data.separator.symbol == '~';
+    }
+    free(cleaned); // Free the cleaned string
+    return result;
 }
 
 void printStack(stack* s) {
@@ -1082,261 +1171,619 @@ typedef struct {
     } value;
 } ExprValue;
 
-// Function to evaluate an expression node
-ExprValue evaluateExpression(node* exprNode, SymbolTable* table) {
-    ExprValue result = {0, TYPE_INT, {0}};
-    if (!exprNode) {
-        printf("Debug: evaluateExpression: NULL node\n");
-        return result;
-    }
-    printf("Debug: Evaluating expression node: %s (children: %d)\n", exprNode->symbol, exprNode->childCount);
 
-    // Handle leaf nodes (Factor -> id | literal)
-    if (strcmp(exprNode->symbol, "Factor") == 0 && exprNode->childCount == 3 &&
-        strcmp(exprNode->children[0]->symbol, "(") == 0) {
-        printf("Debug: Factor with parentheses, evaluating Expression\n");
-        return evaluateExpression(exprNode->children[1], table); // Expression inside ()
+// Modified evaluateExpression function
+double evaluateExpression(node* n, SymbolTable* table) {
+    printf("Debug: Evaluating expression node: %s (children: %d, line: %d)\n",
+           n->symbol, n->childCount, n->token.lineNumber);
+    if (strcmp(n->symbol, "Expression") != 0 || n->childCount < 1) {
+        printf("Error: Invalid Expression node at line %d\n", n->token.lineNumber);
+        return 0.0;
     }
-    if (strcmp(exprNode->symbol, "Factor") == 0 && exprNode->childCount == 1) {
-        node* child = exprNode->children[0];
-        printf("Debug: Factor with single child: %s\n", child->symbol);
-        if (strcmp(child->symbol, "id") == 0 && child->isTokenPresent) {
-            int index = findSymbol(table, child->token.data.identifier.lexeme);
-            printf("Debug: ID %s, found at index %d\n", child->token.data.identifier.lexeme, index);
-            if (index != -1) {
-                SymbolEntry* entry = &table->entries[index];
-                result.isValid = entry->hasValue;
-                result.type = entry->type;
-                if (entry->type == TYPE_INT) {
-                    result.value.intValue = entry->value.intValue;
-                } else {
-                    result.value.floatValue = entry->value.floatValue;
+    if (!n->children[0] || strcmp(n->children[0]->symbol, "RelExpr") != 0) {
+        printf("Error: Expression missing RelExpr at line %d\n", n->token.lineNumber);
+        return 0.0;
+    }
+    double value = evaluateRelExpr(n->children[0], table);
+    if (n->childCount > 1 && strcmp(n->children[1]->symbol, "ExpressionPrime") == 0) {
+        node* exprPrime = n->children[1];
+        if (exprPrime->childCount >= 3) {
+            if (!exprPrime->children[0] || !exprPrime->children[0]->isTokenPresent) {
+                printf("Error: Missing operator in ExpressionPrime at line %d\n",
+                       exprPrime->token.lineNumber);
+                return 0.0;
+            }
+            char* op = exprPrime->children[0]->token.data.operator.op;
+            if (!exprPrime->children[1] || strcmp(exprPrime->children[1]->symbol, "RelExpr") != 0) {
+                printf("Error: ExpressionPrime missing RelExpr at line %d\n",
+                       exprPrime->token.lineNumber);
+                return 0.0;
+            }
+            double right = evaluateRelExpr(exprPrime->children[1], table);
+            if (strcmp(op, "||") == 0) return (value != 0.0 || right != 0.0) ? 1.0 : 0.0;
+            if (strcmp(op, "&&") == 0) return (value != 0.0 && right != 0.0) ? 1.0 : 0.0;
+        }
+    }
+    return value;
+}
+
+double evaluateRelExpr(node* n, SymbolTable* table) {
+    printf("Debug: Evaluating RelExpr\n");
+    if (strcmp(n->symbol, "RelExpr") != 0 || n->childCount < 1) {
+        printf("Error: Invalid RelExpr node at line %d\n", n->token.lineNumber);
+        return 0.0;
+    }
+    if (!n->children[0] || strcmp(n->children[0]->symbol, "ArithExpr") != 0) {
+        printf("Error: RelExpr missing ArithExpr at line %d\n", n->token.lineNumber);
+        return 0.0;
+    }
+    double value = evaluateArithExpr(n->children[0], table);
+    if (n->childCount > 1 && strcmp(n->children[1]->symbol, "RelOpTail") == 0) {
+        node* relOpTail = n->children[1];
+        if (relOpTail->childCount >= 3) {
+            if (!relOpTail->children[0] || strcmp(relOpTail->children[0]->symbol, "RelOp") != 0 ||
+                !relOpTail->children[0]->children[0] || !relOpTail->children[0]->children[0]->isTokenPresent) {
+                printf("Error: Invalid RelOp in RelOpTail at line %d\n",
+                       relOpTail->token.lineNumber);
+                return 0.0;
+            }
+            char* op = relOpTail->children[0]->children[0]->token.data.operator.op;
+            if (!relOpTail->children[1] || strcmp(relOpTail->children[1]->symbol, "ArithExpr") != 0) {
+                printf("Error: RelOpTail missing ArithExpr at line %d\n",
+                       relOpTail->token.lineNumber);
+                return 0.0;
+            }
+            double right = evaluateArithExpr(relOpTail->children[1], table);
+            if (strcmp(op, ">") == 0) return (value > right) ? 1.0 : 0.0;
+            if (strcmp(op, "<") == 0) return (value < right) ? 1.0 : 0.0;
+            if (strcmp(op, ">=") == 0) return (value >= right) ? 1.0 : 0.0;
+            if (strcmp(op, "<=") == 0) return (value <= right) ? 1.0 : 0.0;
+            if (strcmp(op, "==") == 0) return (value == right) ? 1.0 : 0.0;
+            if (strcmp(op, "!=") == 0) return (value != right) ? 1.0 : 0.0;
+        }
+    }
+    return value;
+}
+
+double evaluateArithExpr(node* n, SymbolTable* table) {
+    if (!n || strcmp(n->symbol, "ArithExpr") != 0) {
+        printf("Error: Invalid ArithExpr node\n");
+        return 0.0;
+    }
+    double left = evaluateTerm(n->children[0], table);
+    if (n->childCount == 1) { // Changed from n->childCount == 2 to handle single Term
+        n->symbolType = n->children[0]->symbolType;
+        return left;
+    }
+    node* arithExprPrime = n->children[1];
+    if (strcmp(arithExprPrime->symbol, "ArithExprPrime") != 0) {
+        printf("Error: Invalid ArithExprPrime in ArithExpr at line %d\n", n->token.lineNumber);
+        return left;
+    }
+    if (arithExprPrime->childCount == 0 || strcmp(arithExprPrime->children[0]->symbol, "epsilon") == 0) {
+        n->symbolType = n->children[0]->symbolType;
+        return left;
+    }
+    node* opNode = arithExprPrime->children[0];
+    double right = evaluateTerm(arithExprPrime->children[1], table);
+    n->symbolType = (n->children[0]->symbolType == TYPE_INT && arithExprPrime->children[1]->symbolType == TYPE_INT) ? TYPE_INT : TYPE_FLOAT;
+    switch (opNode->token.data.operator.op[0]) {
+        case '+':
+            return left + right;
+        case '-':
+            return left - right;
+        default:
+            printf("Error: Unknown operator %s at line %d\n",
+                   opNode->token.data.operator.op, opNode->token.lineNumber);
+            return 0.0;
+    }
+}
+
+double evaluateTerm(node* n, SymbolTable* table) {
+    printf("Debug: Evaluating Term\n");
+    if (strcmp(n->symbol, "Term") != 0 || n->childCount < 1) {
+        printf("Error: Invalid Term node at line %d\n", n->token.lineNumber);
+        return 0.0;
+    }
+    if (!n->children[0] || strcmp(n->children[0]->symbol, "Factor") != 0) {
+        printf("Error: Term missing Factor at line %d\n", n->token.lineNumber);
+        return 0.0;
+    }
+    double value = evaluateFactor(n->children[0], table);
+    n->symbolType = n->children[0]->symbolType; // Propagate Factor type
+    if (n->childCount > 1 && strcmp(n->children[1]->symbol, "TermPrime") == 0) {
+        node* termPrime = n->children[1];
+        if (termPrime->childCount >= 3) {
+            if (!termPrime->children[0] || !termPrime->children[0]->isTokenPresent) {
+                printf("Error: Missing operator in TermPrime at line %d\n",
+                       termPrime->token.lineNumber);
+                return 0.0;
+            }
+            char* op = termPrime->children[0]->token.data.operator.op;
+            if (!termPrime->children[1] || strcmp(termPrime->children[1]->symbol, "Factor") != 0) {
+                printf("Error: TermPrime missing Factor at line %d\n",
+                       termPrime->token.lineNumber);
+                return 0.0;
+            }
+            double right = evaluateFactor(termPrime->children[1], table);
+            // Set type: int if both operands are int, else float
+            n->symbolType = (n->children[0]->symbolType == TYPE_INT && termPrime->children[1]->symbolType == TYPE_INT) ? TYPE_INT : TYPE_FLOAT;
+            if (strcmp(op, "*") == 0) return value * right;
+            if (strcmp(op, "/") == 0) {
+                if (right == 0.0) {
+                    printf("Error: Division by zero at line %d\n", termPrime->token.lineNumber);
+                    return 0.0;
                 }
-                printf("Debug: ID %s value: %s, hasValue: %d\n",
-                       child->token.data.identifier.lexeme,
-                       entry->type == TYPE_INT ? "%d" : "%f",
-                       entry->type == TYPE_INT ? entry->value.intValue : entry->value.floatValue,
-                       entry->hasValue);
-            } else {
-                printf("Debug: ID %s not found in symbol table\n", child->token.data.identifier.lexeme);
-            }
-        } else if (strcmp(child->symbol, "literal") == 0 && child->isTokenPresent) {
-            result.isValid = 1;
-            result.type = strchr(child->token.data.literal.value, '.') ? TYPE_FLOAT : TYPE_INT;
-            if (result.type == TYPE_INT) {
-                result.value.intValue = atoi(child->token.data.literal.value);
-                printf("Debug: Literal %s evaluated to int: %d\n", child->token.data.literal.value, result.value.intValue);
-            } else {
-                result.value.floatValue = atof(child->token.data.literal.value);
-                printf("Debug: Literal %s evaluated to float: %f\n", child->token.data.literal.value, result.value.floatValue);
-            }
-        } else {
-            printf("Debug: Invalid Factor child: %s, isTokenPresent: %d\n", child->symbol, child->isTokenPresent);
-        }
-        return result;
-    }
-
-    // Handle ArithExpr (ArithExpr -> Term ArithExprPrime)
-    if (strcmp(exprNode->symbol, "ArithExpr") == 0 && exprNode->childCount >= 1) {
-        printf("Debug: Evaluating ArithExpr\n");
-        ExprValue left = evaluateExpression(exprNode->children[0], table); // Term
-        if (!left.isValid) {
-            printf("Debug: ArithExpr: Invalid left operand\n");
-            return result;
-        }
-        if (exprNode->childCount == 2) {
-            node* prime = exprNode->children[1]; // ArithExprPrime
-            if (prime->childCount == 0) {
-                printf("Debug: ArithExprPrime is epsilon\n");
-                return left; // epsilon
-            }
-            ExprValue current = left;
-            while (prime->childCount >= 2) {
-                node* opNode = prime->children[0];
-                ExprValue right = evaluateExpression(prime->children[1], table); // Term
-                if (!right.isValid) {
-                    printf("Debug: ArithExprPrime: Invalid right operand\n");
-                    return result;
+                if (n->symbolType == TYPE_INT) {
+                    return (double)((int)value / (int)right);
                 }
-                result.isValid = 1;
-                result.type = (current.type == TYPE_FLOAT || right.type == TYPE_FLOAT) ? TYPE_FLOAT : TYPE_INT;
-                printf("Debug: ArithExpr operation: %s, type: %s\n", opNode->symbol, result.type == TYPE_INT ? "int" : "float");
-                if (result.type == TYPE_INT) {
-                    if (strcmp(opNode->symbol, "+") == 0) {
-                        current.value.intValue += right.value.intValue;
-                    } else if (strcmp(opNode->symbol, "-") == 0) {
-                        current.value.intValue -= right.value.intValue;
-                    }
-                    printf("Debug: ArithExpr result: %d\n", current.value.intValue);
-                } else {
-                    float currentVal = (current.type == TYPE_INT) ? current.value.intValue : current.value.floatValue;
-                    float rightVal = (right.type == TYPE_INT) ? right.value.intValue : right.value.floatValue;
-                    if (strcmp(opNode->symbol, "+") == 0) {
-                        current.value.floatValue = currentVal + rightVal;
-                    } else if (strcmp(opNode->symbol, "-") == 0) {
-                        current.value.floatValue = currentVal - rightVal;
-                    }
-                    printf("Debug: ArithExpr result: %f\n", current.value.floatValue);
-                }
-                prime = prime->children[2]; // Move to next ArithExprPrime
-                if (prime->childCount == 0) break; // epsilon
+                return value / right;
             }
-            result = current;
-        } else {
-            result = left;
         }
-        return result;
+    }
+    return value;
+}
+
+double evaluateFactor(node* n, SymbolTable* table) {
+    printf("Debug: Evaluating Factor (children: %d, line: %d)\n",
+           n->childCount, n->token.lineNumber);
+    if (strcmp(n->symbol, "Factor") != 0) {
+        printf("Error: Invalid Factor node at line %d\n", n->token.lineNumber);
+        return 0.0;
     }
 
-    // Handle Term (Term -> Factor TermPrime)
-    if (strcmp(exprNode->symbol, "Term") == 0 && exprNode->childCount >= 1) {
-        printf("Debug: Evaluating Term\n");
-        ExprValue left = evaluateExpression(exprNode->children[0], table); // Factor
-        if (!left.isValid) {
-            printf("Debug: Term: Invalid left operand\n");
-            return result;
-        }
-        if (exprNode->childCount == 2) {
-            node* prime = exprNode->children[1]; // TermPrime
-            if (prime->childCount == 0) {
-                printf("Debug: TermPrime is epsilon\n");
-                return left; // epsilon
-            }
-            ExprValue current = left;
-            while (prime->childCount >= 2) {
-                node* opNode = prime->children[0];
-                ExprValue right = evaluateExpression(prime->children[1], table); // Factor
-                if (!right.isValid) {
-                    printf("Debug: TermPrime: Invalid right operand\n");
-                    return result;
-                }
-                result.isValid = 1;
-                result.type = (current.type == TYPE_FLOAT || right.type == TYPE_FLOAT) ? TYPE_FLOAT : TYPE_INT;
-                printf("Debug: Term operation: %s, type: %s\n", opNode->symbol, result.type == TYPE_INT ? "int" : "float");
-                if (result.type == TYPE_INT) {
-                    if (strcmp(opNode->symbol, "*") == 0) {
-                        current.value.intValue *= right.value.intValue;
-                    } else if (strcmp(opNode->symbol, "/") == 0 && right.value.intValue != 0) {
-                        current.value.intValue /= right.value.intValue;
-                    } else {
-                        printf("Debug: Term: Invalid operation or division by zero\n");
-                        result.isValid = 0;
-                        return result;
-                    }
-                    printf("Debug: Term result: %d\n", current.value.intValue);
-                } else {
-                    float currentVal = (current.type == TYPE_INT) ? current.value.intValue : current.value.floatValue;
-                    float rightVal = (right.type == TYPE_INT) ? right.value.intValue : right.value.floatValue;
-                    if (strcmp(opNode->symbol, "*") == 0) {
-                        current.value.floatValue = currentVal * rightVal;
-                    } else if (strcmp(opNode->symbol, "/") == 0 && rightVal != 0.0) {
-                        current.value.floatValue = currentVal / rightVal;
-                    } else {
-                        printf("Debug: Term: Invalid operation or division by zero\n");
-                        result.isValid = 0;
-                        return result;
-                    }
-                    printf("Debug: Term result: %f\n", current.value.floatValue);
-                }
-                prime = prime->children[2]; // Move to next TermPrime
-                if (prime->childCount == 0) break; // epsilon
-            }
-            result = current;
-        } else {
-            result = left;
-        }
-        return result;
+    if (n->childCount == 0) {
+        printf("Error: Factor node has no children at line %d\n", n->token.lineNumber);
+        return 0.0;
     }
 
-    // Handle RelExpr (RelExpr -> ArithExpr RelOpTail)
-    if (strcmp(exprNode->symbol, "RelExpr") == 0 && exprNode->childCount >= 1) {
-        printf("Debug: Evaluating RelExpr\n");
-        ExprValue left = evaluateExpression(exprNode->children[0], table); // ArithExpr
-        if (!left.isValid) {
-            printf("Debug: RelExpr: Invalid left operand\n");
-            return result;
+    node* child = n->children[0];
+
+    // Case 1: Factor -> id
+    if (strcmp(child->symbol, "id") == 0 && child->isTokenPresent) {
+        int index = findSymbol(table, child->token.data.identifier.lexeme);
+        if (index == -1) {
+            printf("Semantic Error at line %d: Undeclared variable '%s'\n",
+                   child->token.lineNumber, child->token.data.identifier.lexeme);
+            return 0.0;
         }
-        if (exprNode->childCount == 2 && exprNode->children[1]->childCount > 0) {
-            node* relOp = exprNode->children[1]->children[0]; // RelOp
-            ExprValue right = evaluateExpression(exprNode->children[1]->children[1], table); // ArithExpr
-            if (!right.isValid) {
-                printf("Debug: RelExpr: Invalid right operand\n");
-                return result;
-            }
-            result.isValid = 1;
-            result.type = TYPE_INT;
-            float leftVal = (left.type == TYPE_INT) ? left.value.intValue : left.value.floatValue;
-            float rightVal = (right.type == TYPE_INT) ? right.value.intValue : right.value.floatValue;
-            printf("Debug: RelExpr operation: %s, left: %f, right: %f\n", relOp->symbol, leftVal, rightVal);
-            if (strcmp(relOp->symbol, "==") == 0) {
-                result.value.intValue = (leftVal == rightVal);
-            } else if (strcmp(relOp->symbol, "!=") == 0) {
-                result.value.intValue = (leftVal != rightVal);
-            } else if (strcmp(relOp->symbol, "<") == 0) {
-                result.value.intValue = (leftVal < rightVal);
-            } else if (strcmp(relOp->symbol, "<=") == 0) {
-                result.value.intValue = (leftVal <= rightVal);
-            } else if (strcmp(relOp->symbol, ">") == 0) {
-                result.value.intValue = (leftVal > rightVal);
-            } else if (strcmp(relOp->symbol, ">=") == 0) {
-                result.value.intValue = (leftVal >= rightVal);
-            }
-            printf("Debug: RelExpr result: %d\n", result.value.intValue);
-        } else {
-            result = left;
+        if (!table->entries[index].hasValue) {
+            printf("Semantic Warning at line %d: Variable '%s' used before initialization\n",
+                   child->token.lineNumber, child->token.data.identifier.lexeme);
+            return 0.0;
         }
-        return result;
+        double value = table->entries[index].type == TYPE_INT ?
+                       (double)table->entries[index].value.intValue :
+                       (double)table->entries[index].value.floatValue;
+        n->symbolType = table->entries[index].type; // Set parent type
+        printf("Debug: ID %s, found at index %d, value: %f\n",
+               child->token.data.identifier.lexeme, index, value);
+        return value;
+    }
+    // Case 2: Factor -> literal
+    else if (strcmp(child->symbol, "literal") == 0 && child->isTokenPresent) {
+        double value = atof(child->token.data.literal.value);
+        n->symbolType = child->symbolType; // Propagate literal type
+        printf("Debug: Literal %s evaluated to: %f\n",
+               child->token.data.literal.value, value);
+        return value;
+    }
+    // Case 3: Factor -> ( Expression )
+    else if (strcmp(child->symbol, "(") == 0 && n->childCount >= 3) {
+        if (strcmp(n->children[1]->symbol, "Expression") != 0 ||
+            strcmp(n->children[2]->symbol, ")") != 0) {
+            printf("Error: Invalid parenthesized expression at line %d\n",
+                   n->token.lineNumber);
+            return 0.0;
+        }
+        double value = evaluateExpression(n->children[1], table);
+        n->symbolType = n->children[1]->symbolType; // Propagate Expression type
+        printf("Debug: Evaluated parenthesized expression to %f\n", value);
+        return value;
+    }
+    // Case 4: Factor -> UnaryOp Factor
+    else if (strcmp(child->symbol, "UnaryOp") == 0 && n->childCount >= 2) {
+        node* unaryOp = n->children[0];
+        node* factor = n->children[1];
+        if (unaryOp->childCount < 1 || !unaryOp->children[0] || !unaryOp->children[0]->isTokenPresent) {
+            printf("Error: Invalid UnaryOp structure at line %d\n",
+                   n->token.lineNumber);
+            return 0.0;
+        }
+        node* opNode = unaryOp->children[0];
+        char* op = opNode->token.data.operator.op;
+        double value = evaluateFactor(factor, table);
+        n->symbolType = factor->symbolType; // Propagate Factor type
+        printf("Debug: Applying unary operator %s to value %f\n", op, value);
+        if (strcmp(op, "-") == 0) {
+            return -value;
+        }
+        else if (strcmp(op, "!") == 0) {
+            n->symbolType = TYPE_INT; // NOT produces boolean (int)
+            return (value == 0.0) ? 1.0 : 0.0;
+        }
+        else if (strcmp(op, "+") == 0) {
+            return value;
+        }
+        else {
+            printf("Error: Unknown unary operator %s at line %d\n",
+                   op, opNode->token.lineNumber);
+            return 0.0;
+        }
     }
 
-    // Handle Expression (Expression -> RelExpr ExpressionPrime)
-    if (strcmp(exprNode->symbol, "Expression") == 0 && exprNode->childCount >= 1) {
-        printf("Debug: Evaluating Expression\n");
-        return evaluateExpression(exprNode->children[0], table); // RelExpr
+    printf("Error: Invalid Factor node structure at line %d\n", n->token.lineNumber);
+    return 0.0;
+}
+
+void printValue(SymbolEntry* entry) {
+    if (!entry->hasValue) {
+        printf("(uninitialized)");
+        return;
+    }
+    if (entry->type == TYPE_INT) {
+        printf("%d", entry->value.intValue);
+    } else {
+        printf("%f", entry->value.floatValue);
+    }
+}
+
+double executeStatement(node* statement, SymbolTable* table, int* hasReturned) {
+    printf("Debug: Executing statement: Statement (children: %d, line: %d)\n",
+           statement->childCount, statement->token.lineNumber);
+    if (!statement || strcmp(statement->symbol, "Statement") != 0) {
+        printf("Error: Invalid Statement node at line %d\n", statement->token.lineNumber);
+        return 0.0;
+    }
+    node* child = statement->children[0];
+    if (strcmp(child->symbol, "Block") == 0) {
+        printf("Debug: Executing block (children: %d) at line %d\n",
+               child->childCount, child->token.lineNumber);
+        return executeStatementList(child->children[1], table, hasReturned);
+    } else if (strcmp(child->symbol, "Type") == 0) {
+        printf("Debug: Skipping declaration statement\n");
+        return 0.0; // Declarations don't return values
+    } else if (strcmp(child->symbol, "id") == 0 && statement->childCount >= 3 &&
+               strcmp(statement->children[1]->symbol, "=") == 0) {
+        executeAssignment(statement, table);
+        return 0.0; // Assignments don't return values
+    } else if (strcmp(child->symbol, "ReturnStmt") == 0) {
+        printf("Debug: Executing ReturnStmt\n");
+        double value = executeReturnStmt(child, table);
+        *hasReturned = 1;
+        printf("Debug: Returning value %f at line %d\n",
+               value, child->token.lineNumber);
+        return value;
+    } else if (strcmp(child->symbol, "if") == 0) {
+        executeIfStatement(statement, table);
+        return 0.0; // If statements don't return values
+    } else if (strcmp(child->symbol, "while") == 0) {
+        executeWhileStatement(statement, table);
+        return 0.0; // While statements don't return values
+    } else if (strcmp(child->symbol, "PrintfStmt") == 0) {
+        printf("Debug: Executing PrintfStmt\n");
+        executePrintf(child, table); // Pass child directly
+        return 0.0;
+    } else {
+        printf("Error: Unhandled Statement type %s at line %d\n",
+               child->symbol, child->token.lineNumber);
+        return 0.0;
+    }
+}
+
+double executeReturnStmt(node* returnStmt, SymbolTable* table) {
+    if (!returnStmt || strcmp(returnStmt->symbol, "ReturnStmt") != 0) {
+        printf("Error: Invalid ReturnStmt node\n");
+        return 0.0;
+    }
+    if (returnStmt->childCount < 2) {
+        printf("Error: ReturnStmt missing expression\n");
+        return 0.0;
+    }
+    return evaluateExpression(returnStmt->children[1], table);
+}
+
+
+int executeBlock(node* n, SymbolTable* table) {
+    if (!n || strcmp(n->symbol, "Block") != 0) {
+        printf("Error: Invalid block node\n");
+        return 0; // Continue execution
+    }
+    printf("Debug: Executing block (children: %d) at line %d\n",
+           n->childCount, n->children[0]->token.lineNumber);
+
+    if (n->childCount < 3) {
+        printf("Error: Incomplete block node (children: %d)\n", n->childCount);
+        return 0; // Continue execution
     }
 
-    printf("Debug: evaluateExpression: Unhandled node type %s\n", exprNode->symbol);
+    // Validate block structure: { StatementList }
+    if (strcmp(n->children[0]->symbol, "{") != 0 ||
+        strcmp(n->children[1]->symbol, "StatementList") != 0 ||
+        strcmp(n->children[2]->symbol, "}") != 0) {
+        printf("Error: Malformed block structure\n");
+        return 0; // Continue execution
+    }
+
+    int hasReturned = 0;
+    executeStatementList(n->children[1], table, &hasReturned);
+    return hasReturned; // Propagate return status
+}
+
+void executeAssignment(node* n, SymbolTable* table) {
+    if (n->childCount < 4) {
+        printf("Error: Invalid assignment node (children: %d) at line %d\n",
+               n->childCount, n->token.lineNumber);
+        return;
+    }
+    node* idNode = n->children[0];
+    node* exprNode = n->children[2];
+    if (strcmp(idNode->symbol, "id") != 0 || !idNode->isTokenPresent) {
+        printf("Error: Invalid id node in assignment at line %d\n",
+               idNode->token.lineNumber);
+        return;
+    }
+    int index = findSymbol(table, idNode->token.data.identifier.lexeme);
+    if (index == -1) {
+        printf("Semantic Error at line %d: Undeclared variable '%s'\n",
+               idNode->token.lineNumber, idNode->token.data.identifier.lexeme);
+        return;
+    }
+    double value = evaluateExpression(exprNode, table);
+    if (table->entries[index].type == TYPE_INT && value != (int)value) {
+        printf("Warning: Assigning non-integer value %f to integer variable '%s' at line %d\n",
+               value, idNode->token.data.identifier.lexeme, idNode->token.lineNumber);
+    }
+    printf("Debug: Assigning %f to %s\n", value, idNode->token.data.identifier.lexeme);
+    updateSymbol(table, index, value);
+}
+
+void updateSymbol(SymbolTable* table, int index, double value) {
+    if (index < 0 || index >= table->count) {
+        printf("Error: Invalid symbol table index %d\n", index);
+        return;
+    }
+    SymbolEntry* entry = &table->entries[index];
+    if (entry->type == TYPE_INT) {
+        entry->value.intValue = (int)value;
+        printf("Debug: Updated symbol %s to value %d\n", entry->name, entry->value.intValue);
+    } else {
+        entry->value.floatValue = (float)value;
+        printf("Debug: Updated symbol %s to value %f\n", entry->name, entry->value.floatValue);
+    }
+    entry->hasValue = 1;
+}
+
+double executeProgram(node* program, SymbolTable* table) {
+    printf("Debug: Starting program execution\n");
+    if (!program || strcmp(program->symbol, "Program") != 0) {
+        printf("Error: Invalid program node\n");
+        return 0.0;
+    }
+    if (program->childCount == 0 || (program->childCount == 1 && strcmp(program->children[0]->symbol, "epsilon") == 0)) {
+        printf("Debug: Empty program, returning 0.0\n");
+        return 0.0;
+    }
+    if (program->childCount < 1 || strcmp(program->children[0]->symbol, "StatementList") != 0) {
+        printf("Error: Program does not contain StatementList\n");
+        return 0.0;
+    }
+    int hasReturned = 0;
+    double result = executeStatementList(program->children[0], table, &hasReturned);
+    printf("Debug: Program execution completed with return value %f\n", result);
     return result;
 }
 
-void processAssignments(node* root, SymbolTable* table) {
-    if (!root) return;
-    printf("Debug: Processing node: %s (children: %d)\n", root->symbol, root->childCount);
-
-    // Handle assignment statements (Statement -> id = Expression ;)
-    if (strcmp(root->symbol, "Statement") == 0 && root->childCount >= 3 &&
-        strcmp(root->children[1]->symbol, "=") == 0 && root->children[0]->isTokenPresent) {
-        char* id = root->children[0]->token.data.identifier.lexeme;
-        node* exprNode = root->children[2]; // Expression node
-        ExprValue exprVal = evaluateExpression(exprNode, table);
-        if (exprVal.isValid) {
-            int index = findSymbol(table, id);
-            if (index != -1) {
-                SymbolEntry* entry = &table->entries[index];
-                entry->hasValue = 1;
-                if (entry->type == TYPE_INT) {
-                    entry->value.intValue = exprVal.value.intValue;
-                } else {
-                    entry->value.floatValue = exprVal.value.floatValue;
-                }
-                char valueStr[32];
-                snprintf(valueStr, sizeof(valueStr), entry->type == TYPE_INT ? "%d" : "%f",
-                         entry->type == TYPE_INT ? entry->value.intValue : entry->value.floatValue);
-                printf("Debug: Assigned value to %s: %s\n", id, valueStr);
-            } else {
-                printf("Semantic Error at line %d: Undeclared variable '%s'\n",
-                       root->children[0]->token.lineNumber, id);
-            }
+double executeStatementList(node* statementList, SymbolTable* table, int* hasReturned) {
+    printf("Debug: Executing statement: StatementList (children: %d)\n", statementList->childCount);
+    if (!statementList || strcmp(statementList->symbol, "StatementList") != 0) {
+        printf("Error: Invalid StatementList node\n");
+        return 0.0;
+    }
+    if (statementList->childCount == 0 || (statementList->childCount == 1 && strcmp(statementList->children[0]->symbol, "epsilon") == 0)) {
+        printf("Debug: Empty StatementList\n");
+        return 0.0; // Empty statement list
+    }
+    double result = 0.0;
+    for (int i = 0; i < statementList->childCount && !*hasReturned; i++) {
+        node* child = statementList->children[i];
+        if (strcmp(child->symbol, "Statement") == 0) {
+            result = executeStatement(child, table, hasReturned);
+        } else if (strcmp(child->symbol, "StatementList") == 0) {
+            result = executeStatementList(child, table, hasReturned);
         } else {
-            printf("Semantic Error at line %d: Invalid expression for assignment to '%s'\n",
-                   root->children[0]->token.lineNumber, id);
+            printf("Error: Unexpected child node %s in StatementList at line %d\n",
+                   child->symbol, child->token.lineNumber);
+        }
+        if (*hasReturned) {
+            printf("Debug: Return statement encountered, stopping execution\n");
+            break;
         }
     }
+    return result;
+}
 
-    // Recursively process children
-    for (int i = 0; i < root->childCount; i++) {
-        processAssignments(root->children[i], table);
+void executeReturn(node* n, SymbolTable* table) {
+    if (!n || strcmp(n->symbol, "ReturnStmt") != 0) {
+        printf("Error: Invalid return statement node\n");
+        return;
+    }
+    if (n->childCount < 3) {
+        printf("Error: Invalid return node (children: %d, expected at least 3)\n", n->childCount);
+        return;
+    }
+    node* exprNode = n->children[1];
+    if (strcmp(exprNode->symbol, "Expression") != 0) {
+        printf("Error: Invalid expression in return statement at line %d\n",
+               n->children[0]->token.lineNumber);
+        return;
+    }
+    double value = evaluateExpression(exprNode, table);
+    printf("Debug: Returning value %f at line %d\n", value, n->children[0]->token.lineNumber);
+    returnValue = value;
+    hasReturned = 1;
+}
+
+void executeIfStatement(node* n, SymbolTable* table) {
+    printf("Debug: Executing IfStatement (children: %d) at line %d\n",
+           n->childCount, n->token.lineNumber);
+    if (!n || strcmp(n->symbol, "Statement") != 0 || n->childCount < 6 ||
+        strcmp(n->children[0]->symbol, "if") != 0 ||
+        strcmp(n->children[1]->symbol, "(") != 0 ||
+        strcmp(n->children[2]->symbol, "Expression") != 0 ||
+        strcmp(n->children[3]->symbol, ")") != 0 ||
+        strcmp(n->children[4]->symbol, "Statement") != 0 ||
+        strcmp(n->children[5]->symbol, "ElsePart") != 0) {
+        printf("Error: Invalid IfStatement node structure at line %d\n",
+               n->token.lineNumber);
+        return;
+    }
+
+    // Evaluate the condition
+    double conditionValue = evaluateExpression(n->children[2], table);
+    printf("Debug: Condition evaluated to %f\n", conditionValue);
+
+    int hasReturned = 0;
+    if (conditionValue != 0.0) {
+        // Execute then-branch
+        printf("Debug: Executing then-branch at line %d\n", n->children[4]->token.lineNumber);
+        executeStatement(n->children[4], table, &hasReturned);
+    } else {
+        // Execute else-branch (if present)
+        node* elsePart = n->children[5];
+        if (elsePart->childCount >= 2 && strcmp(elsePart->children[0]->symbol, "else") == 0 &&
+            strcmp(elsePart->children[1]->symbol, "Statement") == 0) {
+            printf("Debug: Executing else-branch at line %d\n",
+                   elsePart->children[1]->token.lineNumber);
+            executeStatement(elsePart->children[1], table, &hasReturned);
+        } else {
+            printf("Debug: No else-branch, skipping\n");
+        }
     }
 }
+
+void executeWhileStatement(node* n, SymbolTable* table) {
+    printf("Debug: Executing WhileStatement (children: %d) at line %d\n",
+           n->childCount, n->token.lineNumber);
+    if (!n || strcmp(n->symbol, "Statement") != 0 || n->childCount < 5 ||
+        strcmp(n->children[0]->symbol, "while") != 0 ||
+        strcmp(n->children[1]->symbol, "(") != 0 ||
+        strcmp(n->children[2]->symbol, "Expression") != 0 ||
+        strcmp(n->children[3]->symbol, ")") != 0 ||
+        strcmp(n->children[4]->symbol, "Block") != 0) {
+        printf("Error: Invalid WhileStatement node structure at line %d\n",
+               n->token.lineNumber);
+        return;
+    }
+
+    node* conditionNode = n->children[2];
+    node* blockNode = n->children[4];
+    int hasReturned = 0;
+
+    while (!hasReturned && evaluateExpression(conditionNode, table) != 0.0) {
+        printf("Debug: While condition is true, executing block at line %d\n",
+               blockNode->token.lineNumber);
+        hasReturned = executeBlock(blockNode, table);
+    }
+    printf("Debug: Exited while loop at line %d\n", n->token.lineNumber);
+}
+
+void executePrintf(node* n, SymbolTable* table) {
+    printf("Debug: Executing PrintfStmt at line %d (children: %d)\n",
+           n->token.lineNumber, n->childCount);
+    if (!n || strcmp(n->symbol, "PrintfStmt") != 0 || n->childCount != 6) {
+        printf("Error: Invalid PrintfStmt node at line %d (children: %d)\n",
+               n->token.lineNumber, n->childCount);
+        return;
+    }
+    // Validate PrintfStmt structure: printf @ string PrintTail @ ;
+    if (strcmp(n->children[0]->symbol, "printf") != 0 ||
+        strcmp(n->children[1]->symbol, "@") != 0 ||
+        strcmp(n->children[2]->symbol, "string") != 0 ||
+        strcmp(n->children[3]->symbol, "PrintTail") != 0 ||
+        strcmp(n->children[4]->symbol, "@") != 0 ||
+        strcmp(n->children[5]->symbol, ";") != 0) {
+        printf("Error: Invalid PrintfStmt structure at line %d\n",
+               n->token.lineNumber);
+        return;
+    }
+    node* stringNode = n->children[2];
+    if (!stringNode->isTokenPresent) {
+        printf("Error: Missing string token in PrintfStmt at line %d\n",
+               stringNode->token.lineNumber);
+        return;
+    }
+    char* format = stringNode->token.data.string.value;
+    char* cursor = format;
+    node* printTail = n->children[3];
+    while (*cursor != '\0') {
+        if (*cursor == '~' && *(cursor + 1) == 'a' && *(cursor + 2) == '\0') {
+            // Special case: handle "~a" with empty PrintTail
+            int index = findSymbol(table, "a");
+            if (index == -1) {
+                printf("Semantic Error: Undeclared variable 'a' at line %d\n",
+                       n->token.lineNumber);
+                return;
+            }
+            SymbolEntry* entry = &table->entries[index];
+            if (entry->hasValue) {
+                if (entry->type == TYPE_INT) {
+                    printf("%d", entry->value.intValue);
+                } else {
+                    printf("%f", entry->value.floatValue);
+                }
+            } else {
+                printf("Error: Uninitialized variable 'a' at line %d\n",
+                       n->token.lineNumber);
+                return;
+            }
+            cursor += 2; // Skip ~a
+        } else if (*cursor == '~') {
+            if (!printTail || printTail->childCount < 3 || strcmp(printTail->symbol, "PrintTail") != 0) {
+                printf("Error: Missing identifier for format specifier ~ at line %d\n",
+                       n->token.lineNumber);
+                return;
+            }
+            node* idNode = printTail->children[1];
+            if (!idNode || strcmp(idNode->symbol, "id") != 0 || !idNode->isTokenPresent) {
+                printf("Error: Invalid identifier in PrintTail at line %d\n",
+                       printTail->token.lineNumber);
+                return;
+            }
+            int index = findSymbol(table, idNode->token.data.identifier.lexeme);
+            if (index == -1) {
+                printf("Semantic Error: Undeclared variable '%s' at line %d\n",
+                       idNode->token.data.identifier.lexeme,
+                       n->token.lineNumber);
+                return;
+            }
+            SymbolEntry* entry = &table->entries[index];
+            if (entry->hasValue) {
+                if (entry->type == TYPE_INT) {
+                    printf("%d", entry->value.intValue);
+                } else {
+                    printf("%f", entry->value.floatValue);
+                }
+            } else {
+                printf("Error: Uninitialized variable '%s' at line %d\n",
+                       idNode->token.data.identifier.lexeme,
+                       n->token.lineNumber);
+                return;
+            }
+            printTail = printTail->children[2]; // Move to next PrintTail
+            cursor++; // Skip ~
+        } else {
+            putchar(*cursor);
+            cursor++;
+        }
+    }
+    if (printTail && printTail->childCount > 0) {
+        printf("Error: Extra PrintTail arguments at line %d\n",
+               printTail->token.lineNumber);
+    }
+    printf("\n"); // Add newline after printing the formatted string
+}
+
 
 int parsingTableChecking(tokenNode* head, node** p, SymbolTable* table) {
     stack s;
@@ -1348,14 +1795,16 @@ int parsingTableChecking(tokenNode* head, node** p, SymbolTable* table) {
     tokenNode* currentTokenPtr = head;
     Token currentToken = {0};
     VarType currentType = TYPE_INT;
-    char* lastAssignedId = NULL;
-    node* currentStatement = NULL; // Track current statement for loop handling
+    char buffer[256]; // Buffer for getTokenString
 
     if (currentTokenPtr) {
         currentToken = getNextToken(&currentTokenPtr);
-        printf("Debug: First token: %s (line %d)\n", getTokenString(currentToken), currentToken.lineNumber);
+        printf("Debug: First token: %s (type %d, line %d)\n",
+               getTokenString(currentToken, buffer, sizeof(buffer)),
+               currentToken.type, currentToken.lineNumber);
     } else {
         printf("Syntax Error: Empty input\n");
+        freeNode(root);
         return 0;
     }
 
@@ -1364,100 +1813,135 @@ int parsingTableChecking(tokenNode* head, node** p, SymbolTable* table) {
         StackItem item = pop(&s);
         char* topSymbol = item.symbol;
         node* currentNode = item.treeNode;
-        printf("Debug: Popped symbol: %s, isTerminal=%d\n", topSymbol, item.isTerminal);
 
-        // Track statement nodes for loop handling
-        if (strcmp(topSymbol, "Statement") == 0) {
-            currentStatement = currentNode;
-            printf("Debug: Statement node with %d children:", currentNode->childCount);
-            for (int i = 0; i < currentNode->childCount; i++) {
-                printf(" %s", currentNode->children[i]->symbol);
-                if (currentNode->children[i]->isTokenPresent) {
-                    printf(" [token: %s]", getTokenString(currentNode->children[i]->token));
-                }
-            }
-            printf("\n");
+        if (!topSymbol) {
+            printf("Error: Popped NULL symbol from stack\n");
+            freeNode(root);
+            freeTokenList(head);
+            return 0;
         }
 
-        int isTerminal = 0;
+        // Validate topSymbol
+        int isValidSymbol = 0;
         for (int i = 0; terminals[i] != NULL; i++) {
             if (strcmp(topSymbol, terminals[i]) == 0) {
-                isTerminal = 1;
+                isValidSymbol = 1;
                 break;
             }
         }
-        if (strcmp(topSymbol, "string") == 0) isTerminal = 1;
+        for (int i = 0; !isValidSymbol && nonterminals[i] != NULL; i++) {
+            if (strcmp(topSymbol, nonterminals[i]) == 0) {
+                isValidSymbol = 1;
+                break;
+            }
+        }
+        if (!isValidSymbol) {
+            printf("Error: Invalid symbol '%s' popped from stack\n", topSymbol);
+            free(topSymbol);
+            freeNode(root);
+            freeTokenList(head);
+            return 0;
+        }
 
-        if (isTerminal) {
-            if (terminalMatches(topSymbol, currentToken)) {
-                if (strcmp(topSymbol, "$") != 0) {
-                    currentNode->isTokenPresent = 1;
-                    currentNode->token = currentToken;
-                    if (strcmp(topSymbol, "id") == 0) {
-                        int isDeclaration = 0;
-                        node* parent = currentNode->parent;
-                        while (parent != NULL) {
-                            if (strcmp(parent->symbol, "Statement") == 0) {
-                                if (parent->childCount > 0 && strcmp(parent->children[0]->symbol, "Type") == 0) {
-                                    isDeclaration = 1;
-                                    break;
-                                }
-                            } else if (strcmp(parent->symbol, "DeclTail") == 0) {
-                                if (parent->childCount > 0 && strcmp(parent->children[0]->symbol, ",") == 0) {
-                                    isDeclaration = 1;
-                                    break;
-                                }
-                            }
-                            parent = parent->parent;
-                        }
-                        if (isDeclaration) {
+        printf("Debug: Processing symbol: %s (isTerminal: %d)\n",
+               topSymbol, isNonTerminal(topSymbol) ? 0 : 1);
+
+        if (terminalMatches(topSymbol, currentToken)) {
+            if (strcmp(topSymbol, "$") == 0 && (currentToken.lineNumber == -1 || currentToken.data.separator.symbol == '$')) {
+                printf("Debug: Reached end of input, parsing successful\n");
+                free(topSymbol);
+                return 1;
+            }
+            if (currentNode) {
+                currentNode->isTokenPresent = 1;
+                currentNode->token = currentToken;
+                if (strcmp(topSymbol, "id") == 0) {
+                    int index = findSymbol(table, currentToken.data.identifier.lexeme);
+                    if (index != -1) {
+                        currentNode->symbolType = table->entries[index].type; // Set type from symbol table
+                    }
+                    int isDeclaration = 0;
+                    node* parent = currentNode->parent;
+                    if (parent && strcmp(parent->symbol, "Statement") == 0 &&
+                        parent->childCount > 0 && strcmp(parent->children[0]->symbol, "Type") == 0) {
+                        isDeclaration = 1;
+                    } else if (parent && strcmp(parent->symbol, "DeclTail") == 0 &&
+                               parent->childCount > 0 && strcmp(parent->children[0]->symbol, ",") == 0) {
+                        isDeclaration = 1;
+                    }
+                    if (isDeclaration) {
+                        if (findSymbol(table, currentToken.data.identifier.lexeme) == -1) {
                             if (!addSymbol(table, currentToken.data.identifier.lexeme, currentType, currentToken.lineNumber)) {
                                 free(topSymbol);
+                                freeNode(root);
+                                freeTokenList(head);
                                 return 0;
                             }
                         } else {
-                            if (findSymbol(table, currentToken.data.identifier.lexeme) == -1) {
-                                printf("Semantic Error at line %d: Undeclared variable '%s'\n",
-                                       currentToken.lineNumber, currentToken.data.identifier.lexeme);
-                                free(topSymbol);
-                                return 0;
-                            }
+                            printf("Semantic Error at line %d: Variable '%s' already declared\n",
+                                   currentToken.lineNumber, currentToken.data.identifier.lexeme);
+                            free(topSymbol);
+                            freeNode(root);
+                            freeTokenList(head);
+                            return 0;
                         }
-                    } else if (strcmp(topSymbol, "int") == 0) {
-                        currentType = TYPE_INT;
-                    } else if (strcmp(topSymbol, "float") == 0) {
-                        currentType = TYPE_FLOAT;
+                    } else if (strcmp(currentNode->parent->symbol, "PrintfStmt") != 0 &&
+                               findSymbol(table, currentToken.data.identifier.lexeme) == -1) {
+                        printf("Semantic Error at line %d: Undeclared variable '%s'\n",
+                               currentToken.lineNumber, currentToken.data.identifier.lexeme);
+                        free(topSymbol);
+                        freeNode(root);
+                        freeTokenList(head);
+                        return 0;
                     }
+                } else if (strcmp(topSymbol, "literal") == 0) {
+                    // Check if literal is integer or float
+                    char* endptr;
+                    strtod(currentToken.data.literal.value, &endptr);
+                    if (*endptr == '\0') {
+                        currentNode->symbolType = TYPE_INT; // Integer literal
+                    } else if (*endptr == '.') {
+                        currentNode->symbolType = TYPE_FLOAT; // Float literal
+                    }
+                } else if (strcmp(topSymbol, "int") == 0) {
+                    currentType = TYPE_INT;
+                } else if (strcmp(topSymbol, "float") == 0) {
+                    currentType = TYPE_FLOAT;
                 }
-                currentToken = getNextToken(&currentTokenPtr);
-                printf("Debug: Advanced to next token: %s\n", getTokenString(currentToken));
-                free(topSymbol);
-                continue;
-            } else {
-                printf("Syntax Error at line %d: Expected terminal %s, got %s\n",
-                       currentToken.lineNumber, topSymbol, getTokenString(currentToken));
-                free(topSymbol);
-                return 0;
             }
+            currentToken = getNextToken(&currentTokenPtr);
+            printf("Debug: Advanced to next token: %s (type %d, line %d)\n",
+                   getTokenString(currentToken, buffer, sizeof(buffer)),
+                   currentToken.type, currentToken.lineNumber);
+            free(topSymbol);
+            continue;
         }
 
         if (isNonTerminal(topSymbol)) {
             NonTerminal ntIndex = getNonTerminalEnum(topSymbol);
+            if (ntIndex == -1) {
+                printf("Error: Invalid non-terminal %s\n", topSymbol);
+                free(topSymbol);
+                freeNode(root);
+                freeTokenList(head);
+                return 0;
+            }
             Terminal tIndex = getTerminalEnum(NULL, currentToken);
-
             if (tIndex == -1) {
                 printf("Syntax Error at line %d: Invalid token %s\n",
-                       currentToken.lineNumber, getTokenString(currentToken));
+                       currentToken.lineNumber, getTokenString(currentToken, buffer, sizeof(buffer)));
                 free(topSymbol);
+                freeNode(root);
+                freeTokenList(head);
                 return 0;
             }
 
             int production = parsingTable[ntIndex][tIndex];
             printf("Debug: Looking up production for non-terminal %s, token %s, got production %d\n",
-                   topSymbol, getTokenString(currentToken), production);
+                   topSymbol, getTokenString(currentToken, buffer, sizeof(buffer)), production);
             if (production == -1) {
                 printf("Syntax Error at line %d: No production for %s on token %s. Expected one of: ",
-                       currentToken.lineNumber, topSymbol, getTokenString(currentToken));
+                       currentToken.lineNumber, topSymbol, getTokenString(currentToken, buffer, sizeof(buffer)));
                 for (int i = 0; i < num_terminal; i++) {
                     if (parsingTable[ntIndex][i] != -1) {
                         printf("%s ", terminals[i]);
@@ -1465,6 +1949,8 @@ int parsingTableChecking(tokenNode* head, node** p, SymbolTable* table) {
                 }
                 printf("\n");
                 free(topSymbol);
+                freeNode(root);
+                freeTokenList(head);
                 return 0;
             }
 
@@ -1472,127 +1958,62 @@ int parsingTableChecking(tokenNode* head, node** p, SymbolTable* table) {
             if (!rhs) {
                 printf("Syntax Error: Invalid production index %d for non-terminal %s\n", production, topSymbol);
                 free(topSymbol);
+                freeNode(root);
+                freeTokenList(head);
                 return 0;
             }
-
-            int found = 0;
-            for (int i = 0; i < productionCount; i++) {
-                for (int j = 0; j < grammar[i].productionCount; j++) {
-                    if (grammar[i].productionIndex[j] == production) {
-                        if (strcmp(topSymbol, grammar[i].lhs) != 0) {
-                            printf("Syntax Error: Production %d does not match non-terminal %s (grammar[%d].lhs = %s)\n",
-                                   production, topSymbol, i, grammar[i].lhs);
-                            free(topSymbol);
-                            return 0;
-                        }
-                        found = 1;
-                        printf("Debug: Validated production %d for %s\n", production, topSymbol);
-                        break;
-                    }
-                }
-                if (found) break;
-            }
-            if (!found) {
-                printf("Syntax Error: Production %d not found for non-terminal %s\n", production, topSymbol);
-                free(topSymbol);
-                return 0;
-            }
-
-            printf("Using production %d for %s -> ", production, topSymbol);
-            for (int k = 0; rhs[k][0] != '\0'; k++) printf("%s ", rhs[k]);
-            printf("\n");
 
             if (strcmp(rhs[0], "epsilon") == 0) {
-                Token nextTokenCheck = peekNextToken(&currentTokenPtr);
-                printf("Debug: Applied epsilon production for %s, next token is %s\n",
-                       topSymbol, getTokenString(nextTokenCheck));
-                free(topSymbol);
-                continue;
-            }
-
-            // Handle while loop
-            if (strcmp(topSymbol, "Statement") == 0 && currentStatement &&
-                currentStatement->childCount > 0 &&
-                strcmp(currentStatement->children[0]->symbol, "while") == 0) {
-                node* condition = currentStatement->children[2]; // Expression
-                node* block = currentStatement->children[4];     // Block
-                ExprValue condVal = evaluateExpression(condition, table);
-
-                while (condVal.isValid && condVal.type == TYPE_INT && condVal.value.intValue) {
-                    printf("Debug: While loop condition true, executing block\n");
-                    // Process all statements in the block
-                    processAssignments(block, table);
-                    // Re-evaluate the condition
-                    condVal = evaluateExpression(condition, table);
-                }
-                printf("Debug: While loop condition false, exiting loop\n");
-                free(topSymbol);
-                continue;
-            }
-
-            // Handle if statement
-            if (strcmp(topSymbol, "Statement") == 0 && currentStatement &&
-                currentStatement->childCount > 0 &&
-                strcmp(currentStatement->children[0]->symbol, "if") == 0) {
-                node* condition = currentStatement->children[2]; // Expression
-                node* thenStmt = currentStatement->children[4];  // Statement
-                node* elsePart = currentStatement->children[5];  // ElsePart
-                ExprValue condVal = evaluateExpression(condition, table);
-
-                if (condVal.isValid && condVal.type == TYPE_INT && condVal.value.intValue) {
-                    printf("Debug: If condition true, executing then branch\n");
-                    processAssignments(thenStmt, table);
-                } else if (elsePart->childCount > 0 && strcmp(elsePart->children[0]->symbol, "else") == 0) {
-                    printf("Debug: If condition false, executing else branch\n");
-                    processAssignments(elsePart->children[1], table);
-                }
-                printf("Debug: If statement processed\n");
+                printf("Debug: Applied epsilon production for %s\n", topSymbol);
                 free(topSymbol);
                 continue;
             }
 
             int symbolCount = 0;
-            while (rhs[symbolCount][0] != '\0') symbolCount++;
+            while (rhs[symbolCount][0] != '\0' && symbolCount < maxSymbolPerProduction) {
+                symbolCount++;
+            }
             node* tempChildren[10];
             int tempChildCount = 0;
             for (int i = 0; i < symbolCount; i++) {
                 node* child = create(rhs[i]);
                 child->parent = currentNode;
+                child->token.lineNumber = currentToken.lineNumber; // Propagate line number
                 tempChildren[tempChildCount++] = child;
-                printf("Debug: Created child node for %s\n", rhs[i]);
             }
             for (int i = 0; i < tempChildCount; i++) {
                 currentNode->children[i] = tempChildren[i];
                 currentNode->childCount++;
-                printf("Debug: Added child %s to node %s\n", tempChildren[i]->symbol, currentNode->symbol);
+            }
+            // Debug output for PrintfStmt node creation
+            if (strcmp(topSymbol, "PrintfStmt") == 0) {
+                printf("Debug: Creating PrintfStmt node with %d children\n", currentNode->childCount);
+                for (int i = 0; i < currentNode->childCount; i++) {
+                    printf("  Child %d: %s\n", i, currentNode->children[i]->symbol);
+                }
             }
             for (int i = symbolCount - 1; i >= 0; i--) {
                 push(&s, rhs[i], tempChildren[i]);
-                printf("Debug: Pushed %s to stack\n", rhs[i]);
             }
-            printf("Debug: After pushing production symbols, stack is: ");
-            printStack(&s);
             free(topSymbol);
         } else {
             printf("Syntax Error at line %d: Expected terminal %s, got %s\n",
-                   currentToken.lineNumber, topSymbol, getTokenString(currentToken));
+                   currentToken.lineNumber, topSymbol, getTokenString(currentToken, buffer, sizeof(buffer)));
             free(topSymbol);
+            freeNode(root);
+            freeTokenList(head);
             return 0;
         }
     }
 
-    if (currentTokenPtr != NULL) {
+    if (currentTokenPtr != NULL || currentToken.lineNumber != -1) {
         printf("Syntax Error at line %d: Unexpected tokens remaining\n",
                currentToken.lineNumber);
-        freeTokenList(currentTokenPtr);
+        freeNode(root);
+        freeTokenList(head);
         return 0;
     }
 
-    // Process top-level assignments after parsing
-    printf("Debug: Processing top-level assignments\n");
-    processAssignments(root, table);
-
-    if (lastAssignedId) free(lastAssignedId);
     printf("\nParsing Successful!\n");
     return 1;
 }
@@ -1614,31 +2035,33 @@ char (*getFlatIndex(productionRule* grammar, int prodNum))[maxSymbolLength] {
     return NULL;
 }
 
-const char* getTokenString(Token t) {
-    static char buffer[128];
-    if (t.lineNumber == -1) return "EOF";
+char* getTokenString(Token t, char* buffer, size_t bufferSize) {
+    if (t.lineNumber == -1) {
+        snprintf(buffer, bufferSize, "EOF");
+        return buffer;
+    }
     switch (t.type) {
         case TOKEN_KEYWORD:
-            strcpy(buffer, t.data.keyword.lexeme);
+            snprintf(buffer, bufferSize, "%s", t.data.keyword.lexeme);
             return buffer;
         case TOKEN_OPERATOR:
-            strcpy(buffer, t.data.operator.op);
+            snprintf(buffer, bufferSize, "%s", t.data.operator.op);
             return buffer;
         case TOKEN_IDENTIFIER:
-            strcpy(buffer, t.data.identifier.lexeme);
+            snprintf(buffer, bufferSize, "%s", t.data.identifier.lexeme);
             return buffer;
         case TOKEN_LITERAL:
-            strcpy(buffer, t.data.literal.value);
+            snprintf(buffer, bufferSize, "%s", t.data.literal.value);
             return buffer;
         case TOKEN_STRING:
-            strcpy(buffer, t.data.string.value);
+            snprintf(buffer, bufferSize, "%s", t.data.string.value);
             return buffer;
         case TOKEN_SEPARATOR:
-            buffer[0] = t.data.separator.symbol;
-            buffer[1] = '\0';
+            snprintf(buffer, bufferSize, "%c", t.data.separator.symbol);
             return buffer;
         default:
-            return "UNKNOWN";
+            snprintf(buffer, bufferSize, "UNKNOWN");
+            return buffer;
     }
 }
 
@@ -1652,32 +2075,39 @@ Terminal getTerminalEnum(const char* sym, Token token) {
     if (token.type == TOKEN_LITERAL) {
         return T_LITERAL;
     }
+    char* cleaned = NULL;
+    Terminal result = -1;
     if (token.type == TOKEN_KEYWORD) {
-        char* cleaned = cleanTokenString(token.data.keyword.lexeme);
+        cleaned = cleanTokenString(token.data.keyword.lexeme);
         for (int i = 0; terminals[i] != NULL; i++) {
             if (strcmp(cleaned, terminals[i]) == 0) {
-                return (Terminal)i;
+                result = (Terminal)i;
+                break;
             }
         }
-    }
-    if (token.type == TOKEN_OPERATOR) {
-        char* cleanedOp = cleanTokenString(token.data.operator.op);
+    } else if (token.type == TOKEN_OPERATOR) {
+        cleaned = cleanTokenString(token.data.operator.op);
         for (int i = 0; terminals[i] != NULL; i++) {
-            if (strcmp(cleanedOp, terminals[i]) == 0) {
-                return (Terminal)i;
+            if (strcmp(cleaned, terminals[i]) == 0) {
+                result = (Terminal)i;
+                break;
             }
         }
-    }
-    if (token.type == TOKEN_SEPARATOR) {
+    } else if (token.type == TOKEN_SEPARATOR) {
         char temp[2] = {token.data.separator.symbol, '\0'};
         for (int i = 0; terminals[i] != NULL; i++) {
             if (strcmp(temp, terminals[i]) == 0) {
-                return (Terminal)i;
+                result = (Terminal)i;
+                break;
             }
         }
     }
-    printf("Debug: Failed to map token %s to terminal\n", getTokenString(token));
-    return -1;
+    free(cleaned); // Free the cleaned string
+    char buffer[256];
+    if (result == -1) {
+        printf("Debug: Failed to map token %s to terminal\n", getTokenString(token, buffer, sizeof(buffer)));
+    }
+    return result;
 }
 
 NonTerminal getNonTerminalEnum(const char* sym) {
@@ -1694,7 +2124,10 @@ void printParseTree(node* root, int depth) {
     for (int i = 0; i < depth; i++) printf("  ");
     printf("%s", root->symbol);
     if (root->isTokenPresent) {
-        printf(" [token: %s, line: %d]", getTokenString(root->token), root->token.lineNumber);
+      char buffer[256];
+      if (root->isTokenPresent) {
+        printf(" [token: %s, line: %d]", getTokenString(root->token, buffer, sizeof(buffer)), root->token.lineNumber);
+      }
     }
     printf(" (children: %d)", root->childCount);
     printf("\n");
@@ -1727,50 +2160,18 @@ int main() {
     ParsingTableInitialized();
 
     head = check(fullContent, 1);
-    tokenNode* headCopy = head;
+    if (!head) {
+        printf("Lexing failed.\n");
+        return 1;
+    }
 
     printf("\n----- Full Token List -----\n");
     tokenNode* temp = head;
     int tokenCount = 0;
+    char buffer[256];
     while (temp != NULL) {
         Token t = temp->token;
-        printf("Token %d: %s (type %d, line %d)\n", tokenCount++, getTokenString(t), t.type, t.lineNumber);
-        temp = temp->next;
-    }
-
-    Token endToken;
-    endToken.type = TOKEN_SEPARATOR;
-    endToken.data.separator.symbol = '$';
-    endToken.lineNumber = lineNumber - 1;
-    head = append(endToken, head);
-
-    printf("\n----- Token List -----\n");
-    temp = head;
-    while (temp != NULL) {
-        Token t = temp->token;
-        switch (t.type) {
-            case TOKEN_KEYWORD:
-                printf("Keyword: %s (line %d)\n", t.data.keyword.lexeme, t.lineNumber);
-                break;
-            case TOKEN_LITERAL:
-                printf("Literal: %s (line %d)\n", t.data.literal.value, t.lineNumber);
-                break;
-            case TOKEN_STRING:
-                printf("String: %s (line %d)\n", t.data.string.value, t.lineNumber);
-                break;
-            case TOKEN_OPERATOR:
-                printf("Operator: %s (line %d)\n", t.data.operator.op, t.lineNumber);
-                break;
-            case TOKEN_SEPARATOR:
-                if (t.data.separator.symbol == '$')
-                    printf("End Marker: $ (line %d)\n", t.lineNumber);
-                else
-                    printf("Separator: %c (line %d)\n", t.data.separator.symbol, t.lineNumber);
-                break;
-            case TOKEN_IDENTIFIER:
-                printf("Identifier: %s (line %d)\n", t.data.identifier.lexeme, t.lineNumber);
-                break;
-        }
+        printf("Token %d: %s (type %d, line %d)\n", tokenCount++, getTokenString(t, buffer, sizeof(buffer)), t.type, t.lineNumber);
         temp = temp->next;
     }
 
@@ -1785,11 +2186,19 @@ int main() {
         printParseTree(root, 0);
         printf("------------------------------------------\n");
         printSymbolTable(&table);
+        printf("\n----- Executing Program -----\n");
+        double returnValue = executeProgram(root, &table);
+        printf("\n----- Execution Complete -----\n");
+        printf("Return value: %f\n", returnValue);
+        printSymbolTable(&table);
     } else {
         printf("\nParsing Failed.\n");
     }
 
-    freeTokenList(headCopy);
+    for (int i = 0; i < table.count; i++) {
+        free(table.entries[i].name);
+    }
+    freeTokenList(head);
     freeNode(root);
     return 0;
 }
