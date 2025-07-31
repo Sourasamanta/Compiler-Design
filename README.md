@@ -1,45 +1,49 @@
 # 🔍 LL(1) Parser in C
 
-A fully functional LL(1) recursive descent parser implemented in C that handles a wide range of C-like language constructs such as declarations, assignments, function calls, conditionals, loops, and expressions. It includes:
-
-* A hand-written lexer that generates tokens from input
-* LL(1) parsing logic using a stack and a predictive parsing table
-* Complete grammar with FIRST and FOLLOW sets
-* Parse tree generation for syntactic structure
-* Clear syntax error reporting with line numbers
+A fully functional **LL(1) predictive parser** implemented in C for a simplified C-like programming language. It includes a hand-written lexer, a predictive parsing table, parse tree construction, semantic analysis with a symbol table, and an interpreter for executing programs.
 
 ---
 
 ## 🚀 Features
 
-* ✅ Supports declarations (`int`, `float`), assignments, expressions
-* ✅ Logical, relational, arithmetic, and unary operators
-* ✅ `if`-`else`, `while` blocks with nested scopes
-* ✅ `return` statements and custom `printf` syntax
-* ✅ LL(1) Parsing Table with flat indexed grammar rules
-* ✅ Detailed error reporting (line number, expected vs actual token)
-* ✅ Parse tree construction with each node linked to tokens
-* ✅ Epsilon (`ε`) productions and lookahead handling
+- ✅ **Declarations** (`int`, `float`), **assignments**, and **expressions**
+- ✅ Supports **logical** (`&&`, `||`), **relational** (`<`, `<=`, `>`, `>=`, `==`, `!=`), **arithmetic** (`+`, `-`, `*`, `/`), and **unary** (`-`, `+`, `!`) operators
+- ✅ **Control flow**: `if-else`, `while` loops with **nested scopes**
+- ✅ `return` statements and **custom `printf` syntax**:
+```
+
+printf @"format \~id"@;
+
+```
+- ✅ **Hand-written lexer**: supports single-line (`//`) and multi-line (`/* ... */`) comments
+- ✅ **LL(1) parsing** using a stack and a **predictive parsing table**
+- ✅ **Grammar with 53 productions**, including FIRST and FOLLOW sets
+- ✅ **Parse tree generation** with token and type tracking
+- ✅ **Detailed syntax and semantic error reporting** with line numbers
+- ✅ **Symbol table** for variable declarations, types, values
+- ✅ **Interpreter** that executes parsed programs
+- ✅ Handles **epsilon (ε) productions** with lookahead
 
 ---
 
 ## 📂 Project Structure
 
-```bash
-├── try1.2.c             # Full lexer, parser, grammar and parse tree
-├── exit1.txt            # Test input program (tokenized and parsed)
-├── README.md            # This documentation
 ```
+
+├── try1.2.c       # Full lexer, parser, grammar, semantic analysis, interpreter
+├── exit1.txt      # Input source code for parsing and execution
+├── README.md      # Documentation (this file)
+
+````
 
 ---
 
 ## 🛠️ How to Compile and Run
 
 ### 🧱 Compile
-
 ```bash
 gcc try1.2.c -o parser
-```
+````
 
 ### ▶️ Run
 
@@ -47,13 +51,11 @@ gcc try1.2.c -o parser
 ./parser
 ```
 
-Make sure `exit1.txt` is present in the same directory.
+Ensure `exit1.txt` is in the same directory.
 
 ---
 
 ## 🧪 Test Cases (`exit1.txt`)
-
-Includes a variety of real-world scenarios:
 
 ### ✅ Test Case 1: Full program with all constructs
 
@@ -67,6 +69,10 @@ if (x < y || x == y) {
 return result;
 ```
 
+**Output**: `Assigns result = 30, returns 30`
+
+---
+
 ### 🖨️ Test Case 2: `printf` statement
 
 ```c
@@ -76,57 +82,102 @@ printf @"Value is ~a"@;
 return a;
 ```
 
+**Output**: `Prints "Value is 5", returns 5`
+
+---
+
 ### 🔁 Test Case 3: Loops and unary
 
 ```c
 int x, y, z;
+y = 2;
+z = 0;
 x = -(10 * (y + !z));
+while (x < -15) {
+    x = x + 1;
+}
 return x;
 ```
+
+**Output**: `x = -30`, loop runs to `x = -15`, returns `-15`
+
+---
 
 ### ❌ Test Case 4: Invalid syntax (missing semicolon)
 
 ```c
 int x;
-x = 10      // <- Missing semicolon here
+x = 10
 return x;
 ```
 
-### 🕳️ Test Case 5: Empty file (should be handled gracefully)
+**Output**: `Syntax Error at line 2: Expected terminal ';', got EOF`
+
+---
+
+### 🕳️ Test Case 5: Empty file
 
 ```c
 // empty
 ```
 
-More included in `exit1.txt`.
+**Output**: `Returns 0 with empty parse tree`
 
 ---
 
-## 🧾 Output
+### ⚠️ Test Case 6: Semantic error (undeclared variable)
 
-* ✅ **On Success**: Outputs parse tree traversal or confirmation
-* ❌ **On Failure**: Prints line-wise syntax errors with expected token(s)
+```c
+x = 10;
+return x;
+```
+
+**Output**: `Semantic Error at line 1: Undeclared variable 'x'`
 
 ---
+
+## 🧾 Sample Output (Test Case 2)
+
+```
+----- Full Token List -----
+Token 0: int (type 0, line 1)
+Token 1: a (type 4, line 1)
+...
+Parsing Successful!
+
+--------------- Parse Tree ---------------
+Program (children: 1)
+  StatementList (children: 3)
+    Statement (children: 3)
+      Type (children: 1)
+        int [token: int, line: 1] (children: 0)
+...
+
+----- Symbol Table -----
+Symbol 0: a (type: int, line: 1, value: 5, hasValue: 1)
+------------------------
+
+----- Executing Program -----
+Value is 5
+
+----- Execution Complete -----
+Return value: 5.000000
+```
 
 ## ⚠️ Limitations
 
-* No semantic analysis or symbol table (planned)
-* Custom printf syntax (`@...~id@`) is non-standard
-* Only integer and float types supported
-* Single `exit1.txt` input file (no interactive shell)
-
----
-
-## 📌 Future Work
-
-* ✅ Add symbol table construction
-* ✅ Generate intermediate code (3AC)
-* ✅ Semantic checks (type safety, redeclaration, etc.)
-* ✅ Code optimization passes
+* Custom `printf` syntax (`@"...~id"@`) is non-standard
+* Only `int` and `float` types are supported
+* No interactive shell — input only via `exit1.txt`
+* No support for **function declarations** or **calls**
+* Limited type checking (mixed-type ops allowed)
+* Executes directly — no intermediate code generation
 
 ---
 
 ## 👨‍💻 Author
 
-Sourajit Samanta
+**Sourajit Samanta**
+Compiler Design Enthusiast | BTech CSE
+
+---
